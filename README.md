@@ -115,3 +115,17 @@ MIT License - see LICENSE file for details.
 
 **Made with ❤️ for CSBS students**
 
+
+## Deployment (Render)
+
+The backend runs on Render (`bbstop.maneetgupta.me` is a custom domain for the `batchxchange` Render service).
+`.github/workflows/backend.yml` tests every backend change and deploys `main` once the tests pass:
+
+1. **Tests**: migrations are applied to an empty Postgres and checked against the models, then `pytest` runs.
+2. **Deploy** (push to `main`, or "Run workflow"): calls the Render deploy hook for the tested commit, then waits until `/health` reports that commit.
+
+One-time setup in Render and GitHub:
+
+- Render > the service > Settings > **Deploy Hook**: copy the URL, and add it in GitHub as the repository secret `RENDER_DEPLOY_HOOK` (Settings > Secrets and variables > Actions).
+- Render > Settings > **Auto-Deploy**: turn it **Off**, so only tested commits are deployed (the workflow does the deploying).
+- Render > Settings > **Root Directory** `Backend`, **Start Command** `bash scripts/start.sh` (runs `alembic upgrade head`, then starts uvicorn).
