@@ -51,6 +51,7 @@ class SettingsResponse(BaseModel):
     enabled_subtypes: list[str]
     cdc_enabled: bool
     max_proof_size_mb: int
+    swap_cgpa_tolerance: float
 
 
 class SettingsUpdate(BaseModel):
@@ -59,6 +60,7 @@ class SettingsUpdate(BaseModel):
     enabled_subtypes: list[str] | None = None
     cdc_enabled: bool | None = None
     max_proof_size_mb: int | None = None
+    swap_cgpa_tolerance: float | None = None
 
 
 class RegistrationOpenUpdate(BaseModel):

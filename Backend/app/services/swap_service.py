@@ -1,10 +1,8 @@
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.models.student_semester_assignment import StudentSemesterAssignment
-
-settings = get_settings()
+from app.services.settings_service import settings_service
 
 
 class SwapCandidateService:
@@ -32,7 +30,7 @@ class SwapCandidateService:
         if requester is None:
             return []
 
-        cgpa_threshold = settings.CGPA_TOL
+        cgpa_threshold = float(await settings_service.get(db, "swap_cgpa_tolerance"))
         requester_cgpa = float(requester.cgpa)
         min_cgpa = max(0.0, requester_cgpa - cgpa_threshold)
         max_cgpa = min(10.0, requester_cgpa + cgpa_threshold)
@@ -50,6 +48,22 @@ class SwapCandidateService:
             )
         )
         return list(result.scalars().all())
+
+    async def is_eligible(
+        self,
+        db: AsyncSession,
+        requester: StudentSemesterAssignment,
+        target: StudentSemesterAssignment,
+    ) -> bool:
+        """Re-check a swap pair against current CGPAs (they can change after a CGPA upload)."""
+        tolerance = float(await settings_service.get(db, "swap_cgpa_tolerance"))
+        return (
+            requester.semester_id == target.semester_id
+            and requester.batch_id != target.batch_id
+            and requester.active
+            and target.active
+            and abs(float(requester.cgpa) - float(target.cgpa)) <= tolerance + 1e-9
+        )
 
 
 swap_candidate_service = SwapCandidateService()

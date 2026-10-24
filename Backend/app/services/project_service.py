@@ -101,7 +101,10 @@ class ProjectService:
         application = result.scalar_one_or_none()
         if application is None:
             raise _error(status.HTTP_404_NOT_FOUND, "Application not found")
-        return await self.load(db, application_id)
+        application = await self.load(db, application_id)
+        if application.semester.archived:
+            raise _error(status.HTTP_400_BAD_REQUEST, "This semester is archived and read-only")
+        return application
 
     # ------------------------------------------------------------------ serialising
 

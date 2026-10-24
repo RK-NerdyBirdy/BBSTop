@@ -37,7 +37,8 @@ router = APIRouter()
 async def _my_application(db: AsyncSession, student: Student, application_id: int) -> ProjectApplication:
     """Load an application the student is (or was) part of; 404 otherwise."""
     application = await project_service.load(db, application_id)
-    if not any(m.register_number == student.register_number for m in application.members):
+    # Students only see their current semesters
+    if application.semester.archived or not any(m.register_number == student.register_number for m in application.members):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     return application
 
@@ -66,6 +67,7 @@ async def registration_overview(
         .where(
             StudentSemesterAssignment.register_number == student.register_number,
             StudentSemesterAssignment.active.is_(True),
+            Semester.archived.is_(False),
         )
         .order_by(Semester.semester_id.desc())
     )).all()
@@ -111,14 +113,19 @@ async def my_history(
     db: AsyncSession = Depends(get_db),
     student: Student = Depends(get_current_student_record),
 ) -> list[ApplicationResponse]:
-    """All applications the student has been an accepted member of, including withdrawn ones."""
+    """Applications in current semesters the student has been part of, including withdrawn ones."""
     ids = (await db.execute(
         select(ProjectMember.application_id).where(
             ProjectMember.register_number == student.register_number,
             ProjectMember.status.in_([MemberStatus.ACCEPTED, MemberStatus.RELEASED, MemberStatus.REMOVED]),
         )
     )).scalars().all()
-    applications = await project_service.load_many(db, ProjectApplication.application_id.in_(ids))
+    current_semesters = select(Semester.semester_id).where(Semester.archived.is_(False))
+    applications = await project_service.load_many(
+        db,
+        ProjectApplication.application_id.in_(ids),
+        ProjectApplication.semester_id.in_(current_semesters),
+    )
     return await project_service.to_responses(db, applications)
 
 
@@ -206,6 +213,7 @@ async def list_invites(
         db,
         ProjectApplication.application_id.in_([i.application_id for i in invites]),
         ProjectApplication.status == ApplicationStatus.FORMING,
+        ProjectApplication.semester_id.in_(select(Semester.semester_id).where(Semester.archived.is_(False))),
     )
     by_id = {r.application_id: r for r in await project_service.to_responses(db, applications)}
     return [

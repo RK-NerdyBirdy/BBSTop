@@ -9,11 +9,13 @@ async def create_semester(
     db: AsyncSession,
     semester_name: str,
     swap_allowed: bool = False,
+    cohort_year: int | None = None,
 ) -> Semester:
     """Create a new semester."""
     semester = Semester(
         semester_name=semester_name,
         swap_allowed=swap_allowed,
+        cohort_year=cohort_year,
     )
     db.add(semester)
     await db.commit()

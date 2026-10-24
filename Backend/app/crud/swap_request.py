@@ -2,6 +2,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.semester import Semester
 from app.models.student_semester_assignment import StudentSemesterAssignment
 from app.models.swap_request import SwapRequest
 from app.schemas.swap_request import SwapRequestCreate
@@ -146,10 +147,13 @@ async def get_all_student_assignments(
     db: AsyncSession,
     register_number: str,
 ) -> list[StudentSemesterAssignment]:
-    """Get all assignments for a student across all semesters."""
+    """Get a student's assignments in current (non-archived) semesters; archived ones are hidden from students."""
     result = await db.execute(
-        select(StudentSemesterAssignment).where(
-            StudentSemesterAssignment.register_number == register_number
+        select(StudentSemesterAssignment)
+        .join(Semester, Semester.semester_id == StudentSemesterAssignment.semester_id)
+        .where(
+            StudentSemesterAssignment.register_number == register_number,
+            Semester.archived.is_(False),
         )
     )
     return list(result.scalars().all())

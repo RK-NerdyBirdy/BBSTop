@@ -9,6 +9,9 @@ asyncpg
 psycopg[binary]
 alembic
 
+# --- File imports (CGPA sheets) ---
+openpyxl
+
 # --- Validation & Configuration ---
 pydantic
 pydantic-settings
