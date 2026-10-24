@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,8 +75,13 @@ class BatchService:
         semester = semester_result.scalar_one_or_none()
         if not semester:
             return None
+        if semester.archived and swap_allowed:
+            raise HTTPException(status_code=400, detail="This semester is archived and read-only")
 
         semester.swap_allowed = swap_allowed
+        if swap_allowed:
+            # Students can now see and act on batches: no more full reshuffles
+            semester.assignment_locked = True
         await db.commit()
         await db.refresh(semester)
 

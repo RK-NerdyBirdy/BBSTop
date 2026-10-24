@@ -2,6 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.app_setting import AppSetting
 from app.models.project import ProjectSubtype
 
@@ -12,6 +13,8 @@ DEFAULTS: dict[str, object] = {
     "enabled_subtypes": list(ProjectSubtype.ALL),
     "cdc_enabled": True,
     "max_proof_size_mb": 5,
+    # Batch swaps: partners must be within this CGPA range of each other
+    "swap_cgpa_tolerance": get_settings().CGPA_TOL,
 }
 
 
@@ -32,6 +35,10 @@ def _validate(key: str, value: object) -> object:
     elif key == "max_proof_size_mb":
         if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10:
             raise ValueError("max_proof_size_mb must be a whole number between 1 and 10")
+    elif key == "swap_cgpa_tolerance":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
+            raise ValueError("swap_cgpa_tolerance must be a number between 0 and 10")
+        value = round(float(value), 2)
     else:
         raise ValueError(f"Unknown setting: {key}")
     return value

@@ -21,7 +21,7 @@ from app.core.database import async_session_maker
 from app.core.security import get_password_hash
 from app.models import Admin, Batch, Faculty, Semester, Student, StudentSemesterAssignment
 
-SEMESTER_NAME = "Winter 2026-27 Sem 6"
+SEMESTER_NAME = "23 Winter Sem 2026-27"
 BATCHES = ["B1", "B2", "B3", "B4"]
 NAMES = [
     "Aarav Shah", "Diya Iyer", "Kabir Mehta", "Ananya Rao", "Vivaan Gupta", "Isha Nair",
@@ -54,7 +54,7 @@ async def main() -> None:
 
         semester = (await db.execute(select(Semester).where(Semester.semester_name == SEMESTER_NAME))).scalar_one_or_none()
         if semester is None:
-            semester = Semester(semester_name=SEMESTER_NAME, swap_allowed=True, registration_open=True)
+            semester = Semester(semester_name=SEMESTER_NAME, cohort_year=2023, swap_allowed=True, registration_open=True)
             db.add(semester)
             await db.flush()
 

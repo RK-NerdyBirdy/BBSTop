@@ -227,6 +227,12 @@ async def set_registration_open(
     semester = await db.get(Semester, semester_id)
     if semester is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Semester not found")
+    if semester.archived and payload.registration_open:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This semester is archived and read-only")
+    if payload.registration_open and not semester.assignment_locked:
+        # Students can now act on their batches: no more full reshuffles
+        semester.assignment_locked = True
+        await db.commit()
     if semester.registration_open != payload.registration_open:
         semester.registration_open = payload.registration_open
         audit_service.log(db, admin_actor(current_admin.admin_id), "semester.registration_open", "semester", semester_id, {

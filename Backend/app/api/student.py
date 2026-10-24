@@ -508,6 +508,13 @@ async def accept_swap_request(
                 detail="Swaps are not allowed for this semester",
             )
 
+        # CGPAs or batches may have changed since the request was sent
+        if not await swap_candidate_service.is_eligible(db, requester_assignment, target_assignment):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You two are no longer eligible to swap (CGPA or batch changed). Ask them to cancel the request.",
+            )
+
         # Lock both students
         reg_nums = sorted({requester_assignment.register_number, target_assignment.register_number})
         if reg_nums:
@@ -790,6 +797,7 @@ async def get_student_directory(
         .where(
             StudentSemesterAssignment.active.is_(True),
             StudentSemesterAssignment.semester_id == semester_id,
+            Semester.archived.is_(False),
         )
     )
     result = await db.execute(query)

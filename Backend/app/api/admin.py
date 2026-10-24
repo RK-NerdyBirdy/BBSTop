@@ -23,6 +23,7 @@ from app.schemas.batch import SemesterCreate, SemesterResponse, BatchCreate, Bat
 from app.schemas.admin import AdminChangePassword, AdminChangePasswordResponse
 from app.schemas.swap_request import AssignmentResponse, SemesterSwapAllowedResponse, SwapRequestResponseWithDetails
 from app.services.csv_service import csv_service, CSVParsingError
+from app.services.swap_service import swap_candidate_service
 
 router = APIRouter(dependencies=[Depends(get_current_admin)])
 
@@ -324,6 +325,18 @@ async def approve_swap_request(
                 detail="Swap request must be accepted by the student before approval",
             )
 
+        # CGPAs or batches may have changed since the students agreed
+        requester = await get_assignment_by_id(db, swap_request.requester_assignment_id)
+        target = await get_assignment_by_id(db, swap_request.target_assignment_id)
+        semester = await get_semester(db, requester.semester_id) if requester else None
+        if semester is None or semester.archived:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This semester is archived")
+        if not requester or not target or not await swap_candidate_service.is_eligible(db, requester, target):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="These students are no longer eligible to swap (CGPA or batch changed). Reject the request.",
+            )
+
         # Execute the batch swap
         swap_result = await execute_batch_swap(
             db,
@@ -490,14 +503,11 @@ async def update_assignment_batch(
     db: AsyncSession = Depends(get_db),
     current_admin: Admin = Depends(get_current_admin),
 ) -> dict:
-    from app.services.batch_service import batch_service
-    result = await batch_service.update_assignment_batch(db, assignment_id, new_batch_id)
-    if result is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Assignment or target batch not found, or batch is in different semester",
-        )
-    return result
+    """Move one student to another batch of the same semester; cancels their open swap requests."""
+    from app.services.semester_service import semester_service
+    from app.services.project_service import admin_actor
+
+    return await semester_service.move_student(db, admin_actor(current_admin.admin_id), assignment_id, new_batch_id)
 
 
 @router.patch("/semesters/{semester_id}/swap-allowed")
@@ -528,11 +538,15 @@ async def create_semester_endpoint(
     db: AsyncSession = Depends(get_db),
     current_admin: Admin = Depends(get_current_admin),
 ) -> SemesterResponse:
-    """Create a new semester."""
+    """Create a new semester. A year group can only have one current (non-archived) semester."""
+    from app.services.semester_service import semester_service
+
+    await semester_service.require_cohort_free(db, payload.cohort_year)
     semester = await create_semester(
         db,
         semester_name=payload.semester_name,
         swap_allowed=payload.swap_allowed,
+        cohort_year=payload.cohort_year,
     )
     return semester
 
