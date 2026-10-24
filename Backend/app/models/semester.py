@@ -19,6 +19,12 @@ class Semester(Base):
         nullable=False,
         server_default=sa.text("false"),
     )
+    # Project registration window for this semester (HOD toggles it, like swap_allowed)
+    registration_open: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa.text("false"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
