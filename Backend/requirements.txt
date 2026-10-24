@@ -6,7 +6,7 @@ python-multipart
 # --- Database & Migrations ---
 sqlalchemy[asyncio]
 asyncpg
-pyscopg
+psycopg[binary]
 alembic
 
 # --- Validation & Configuration ---
