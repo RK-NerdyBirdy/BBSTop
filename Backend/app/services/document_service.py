@@ -21,7 +21,7 @@ class DocumentService:
         max_mb = await settings_service.get(db, "max_proof_size_mb")
         content = await file.read(max_mb * 1024 * 1024 + 1)
         if len(content) > max_mb * 1024 * 1024:
-            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=f"File must be at most {max_mb} MB")
+            raise HTTPException(status_code=413, detail=f"File must be at most {max_mb} MB")
         if not content:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
         # Trust the file's bytes, not the browser-supplied content type

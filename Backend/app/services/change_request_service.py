@@ -239,7 +239,7 @@ class ChangeRequestService:
 
     async def hod_decide(self, db: AsyncSession, admin_id: int, request_id: int, approve: bool, remarks: str | None) -> ChangeRequest:
         if not approve and not remarks:
-            raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "Please give a reason for rejecting")
+            raise _error(422, "Please give a reason for rejecting")
         actor = admin_actor(admin_id)
 
         # Peek (no lock) to know whether a guide row must be locked first (lock order: faculty -> application)

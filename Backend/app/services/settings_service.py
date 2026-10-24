@@ -53,7 +53,7 @@ class SettingsService:
         try:
             validated = {key: _validate(key, value) for key, value in changes.items()}
         except ValueError as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
         diff: dict[str, dict] = {}
         for key, value in validated.items():

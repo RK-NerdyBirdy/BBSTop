@@ -764,7 +764,7 @@ class ProjectService:
         if application.project_type != ProjectType.CDC or application.status != S.PENDING_HOD:
             raise _error(status.HTTP_400_BAD_REQUEST, "This CDC application is not awaiting a decision")
         if not approve and not remarks:
-            raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "Please give a reason for rejecting")
+            raise _error(422, "Please give a reason for rejecting")
 
         application.status = S.CDC_APPROVED if approve else S.CDC_REJECTED
         application.hod_remarks = remarks

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_MINUTES: int = 120
     FRONTEND_URL: str="http://localhost:3000"
     # Comma-separated list of allowed frontend origins
-    CORS_ORIGINS: str = "http://localhost:3000,https://batchxchange.vercel.app"
+    CORS_ORIGINS: str = "http://localhost:3000,https://bbstop.vercel.app,https://batchxchange.vercel.app"
     # Local development only: enables /api/auth/dev-login. Never set this on Render.
     DEV_AUTH_ENABLED: bool = False
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
