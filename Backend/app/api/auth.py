@@ -7,9 +7,11 @@ from app.core.database import get_db
 from app.core.oauth import get_oauth
 from app.core.security import verify_password, get_password_hash
 from app.crud.admin import get_admin_by_email
+from app.crud.faculty import get_faculty_by_email
 from app.crud.student import get_student_by_email
 from app.models.admin import Admin
 from app.schemas.admin import AdminLogin, AdminResponse, AdminCreate, AdminLoginResponse
+from pydantic import BaseModel, EmailStr
 from app.services.auth_service import auth_service
 
 router = APIRouter()
@@ -54,16 +56,33 @@ async def google_callback(
     # 1. Verify Domain and Google Status
     auth_service.ensure_google_email_verified(user or {})
     auth_service.ensure_allowed_domain(email)
+    settings = get_settings()
+    pfp_url = (user or {}).get("picture")
+
+    # 1.2 Faculty-domain accounts sign in as guides, if HOD has added them to the faculty list
+    if auth_service.role_for_email(email) == "guide":
+        faculty = await get_faculty_by_email(db, email)
+        if not faculty or not faculty.active:
+            return RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/callback?error=not_authorized")
+        if pfp_url and faculty.pfp_url != pfp_url:
+            faculty.pfp_url = pfp_url
+            await db.commit()
+        jwt_token = auth_service.create_jwt_token(
+            faculty.email,
+            faculty.faculty_name,
+            user_type="guide",
+            pfp_url=pfp_url,
+            user_id=faculty.faculty_id,
+        )
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/callback?token={jwt_token}&role=guide")
 
     # 1.5 Only allow students that already exist in the student table
     student = await get_student_by_email(db, email)
     if not student:
-        settings = get_settings()
         error_redirect_url = f"{settings.FRONTEND_URL}/auth/callback?error=not_authorized"
         return RedirectResponse(url=error_redirect_url)
 
     # 2. Update Profile Picture in DB
-    pfp_url = (user or {}).get("picture")
     await auth_service.update_student_pfp(db, email, pfp_url)
 
     # 3. Generate JWT token for student
@@ -76,8 +95,7 @@ async def google_callback(
     )
 
     # 4. Redirect to React Frontend
-    settings = get_settings()
-    frontend_redirect_url = f"{settings.FRONTEND_URL}/auth/callback?token={jwt_token}"
+    frontend_redirect_url = f"{settings.FRONTEND_URL}/auth/callback?token={jwt_token}&role=student"
     return RedirectResponse(url=frontend_redirect_url)
 
 
@@ -114,3 +132,37 @@ async def admin_login(
 async def admin_logout() -> dict:
     """Logout endpoint (stateless JWT - just discard token on client side)."""
     return {"ok": True, "message": "Please discard the token on the client side"}
+
+
+class DevLoginRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/dev-login")
+async def dev_login(
+    payload: DevLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Local development only: issue a student/guide token for a seeded account without Google.
+
+    Returns 404 unless DEV_AUTH_ENABLED=true, which must never be set in production.
+    """
+    if not get_settings().DEV_AUTH_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+    email = payload.email.lower()
+    role = auth_service.role_for_email(email)
+    if role == "guide":
+        faculty = await get_faculty_by_email(db, email)
+        if faculty:
+            token = auth_service.create_jwt_token(
+                faculty.email, faculty.faculty_name, user_type="guide", user_id=faculty.faculty_id
+            )
+            return {"token": token, "role": "guide"}
+    elif role == "student":
+        student = await get_student_by_email(db, email)
+        if student:
+            token = auth_service.create_jwt_token(student.email, student.student_name, user_type="student")
+            return {"token": token, "role": "student"}
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No seeded student or guide with that email")

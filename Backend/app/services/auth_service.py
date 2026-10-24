@@ -30,8 +30,22 @@ class AuthService:
     def get_allowed_domains(self) -> list[str]:
         return self._parse_domains(settings.STUDENT_ALLOWED_DOMAINS)
 
+    def get_faculty_domains(self) -> list[str]:
+        return self._parse_domains(settings.FACULTY_ALLOWED_DOMAINS)
+
+    def role_for_email(self, email: str) -> str | None:
+        """'student' / 'guide' based on the email domain, or None if the domain isn't allowed."""
+        domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+        if domain in self.get_allowed_domains():
+            return "student"
+        if domain in self.get_faculty_domains():
+            return "guide"
+        return None
+
     def ensure_allowed_domain(self, email: str) -> None:
-        allowed_domains = {domain.lower() for domain in self.get_allowed_domains()}
+        allowed_domains = {
+            domain.lower() for domain in self.get_allowed_domains() + self.get_faculty_domains()
+        }
         try:
             domain = email.split("@", 1)[1].lower()
         except IndexError:

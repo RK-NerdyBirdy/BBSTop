@@ -12,6 +12,7 @@ class SemesterResponse(BaseModel):
     semester_id: int
     semester_name: str
     swap_allowed: bool
+    registration_open: bool = False
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

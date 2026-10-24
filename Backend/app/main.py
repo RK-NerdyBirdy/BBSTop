@@ -9,8 +9,8 @@ from app.core.config import get_settings
 settings = get_settings()
 
 app = FastAPI(
-    title="Batch Switcher API",
-    description="Batch switching platform with student-admin coordination",
+    title="BBSTop API",
+    description="BBSTop: CSBS batch swaps and project registration",
     version="1.0.0",
     docs_url=None,    # Disables the /docs (Swagger UI)
     redoc_url=None,   # Disables the /redoc endpoint
@@ -24,10 +24,7 @@ app = FastAPI(
 # ==========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Allows your local frontend to connect
-        "https://batchxchange.vercel.app"
-    ],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers
@@ -39,7 +36,8 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SESSION_SECRET_KEY,
     same_site="lax",
-    https_only=True,
+    # Local dev runs over plain http, so the OAuth session cookie can't be https-only there
+    https_only=not settings.DEV_AUTH_ENABLED,
 )
 app.include_router(api_router, prefix="/api")
 
@@ -57,9 +55,9 @@ def custom_openapi():
         return app.openapi_schema
 
     openapi_schema = get_openapi(
-        title="Batch Switcher API",
+        title="BBSTop API",
         version="1.0.0",
-        description="Batch switching platform with student-admin coordination",
+        description="BBSTop: CSBS batch swaps and project registration",
         routes=app.routes,
     )
 
