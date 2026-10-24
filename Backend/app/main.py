@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from starlette.middleware.sessions import SessionMiddleware
@@ -48,7 +50,8 @@ async def ping():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    # Render sets RENDER_GIT_COMMIT; the deploy workflow polls this to confirm the new release is live
+    return {"status": "ok", "commit": os.getenv("RENDER_GIT_COMMIT", "")[:7] or None}
 
 def custom_openapi():
     if app.openapi_schema:
