@@ -184,12 +184,16 @@ class SemesterService:
         cohort_year: int | None,
         batch_names: list[str],
         exclude: list[str],
+        shuffle: bool = False,
     ) -> tuple[Semester, dict]:
         source = await self.lock(db, source_id)
         self.require_not_archived(source)
         name = name.strip()
         if await self._name_taken(db, name):
             raise _error(status.HTTP_409_CONFLICT, "A semester with this name already exists")
+        if not shuffle:
+            # Keep the source semester's batches; everyone stays in the batch they're in
+            batch_names = [b.batch_name for b in await self.batches(db, source_id)]
         batch_names = [b.strip() for b in batch_names if b.strip()]
         if not batch_names or len({b.lower() for b in batch_names}) != len(batch_names):
             raise _error(status.HTTP_400_BAD_REQUEST, "Give at least one batch, with unique names")
@@ -209,11 +213,15 @@ class SemesterService:
         db.add_all(batches)
         await db.flush()
 
-        seed = secrets.randbelow(2**31)
-        batch_ids = [b.batch_id for b in batches]
-        mapping = batch_balancer.fresh_assignment(
-            [batch_balancer.StudentCgpa(s.register_number, s.cgpa) for s in students], batch_ids, seed
-        )
+        if shuffle:
+            seed = secrets.randbelow(2**31)
+            mapping = batch_balancer.fresh_assignment(
+                [batch_balancer.StudentCgpa(s.register_number, s.cgpa) for s in students], [b.batch_id for b in batches], seed
+            )
+        else:
+            seed = None
+            new_id = {b.batch_name: b.batch_id for b in batches}
+            mapping = {s.register_number: new_id[s.batch_name.strip()] for s in students}
         db.add_all([
             StudentSemesterAssignment(
                 register_number=s.register_number,
@@ -234,6 +242,7 @@ class SemesterService:
             "students": len(students),
             "excluded": sorted(exclude_set),
             "batches": batch_names,
+            "shuffled": shuffle,
             "seed": seed,
             "cancelled_swap_requests": cancelled,
         })

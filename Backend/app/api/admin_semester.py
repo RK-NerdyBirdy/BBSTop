@@ -19,7 +19,10 @@ class RolloverRequest(BaseModel):
     source_semester_id: int
     semester_name: str = Field(..., min_length=1, max_length=100)
     cohort_year: int | None = Field(default=None, ge=2000, le=2100)
-    batch_names: list[str] = Field(..., min_length=1, max_length=20)
+    # shuffle=False (default): same batches as the source semester, everyone stays in theirs.
+    # shuffle=True: deal students into batch_names with balanced average CGPA.
+    shuffle: bool = False
+    batch_names: list[str] = Field(default_factory=list, max_length=20)
     exclude: list[str] = Field(default_factory=list)
 
 
@@ -68,7 +71,7 @@ async def rollover(
     db: AsyncSession = Depends(get_db),
     current_admin: Admin = Depends(get_current_admin),
 ) -> dict:
-    """New semester from an existing one: copy students, create batches, balance them, archive the old one."""
+    """New semester from an existing one: copy students (in the same batches, or reshuffled), archive the old one."""
     semester, summary = await semester_service.rollover(
         db,
         admin_actor(current_admin.admin_id),
@@ -77,6 +80,7 @@ async def rollover(
         payload.cohort_year,
         payload.batch_names,
         payload.exclude,
+        payload.shuffle,
     )
     return {"semester": SemesterResponse.model_validate(semester), **summary}
 
