@@ -13,7 +13,7 @@ from app.crud.faculty import get_faculty, list_faculty
 from app.dependencies.admin_auth import get_current_admin
 from app.models.admin import Admin
 from app.models.audit_log import AuditLog
-from app.models.change_request import ChangeRequest
+from app.models.change_request import ChangeRequest, ChangeRequestStatus
 from app.models.faculty import Faculty
 from app.models.project import ApplicationStatus as S, ProjectApplication, ProjectType
 from app.models.semester import Semester
@@ -371,7 +371,14 @@ async def list_change_requests(
     status_filter: str = "PENDING_HOD",
     db: AsyncSession = Depends(get_db),
 ) -> list[ChangeRequestResponse]:
-    requests = await change_request_service.list_requests(db, ChangeRequest.status == status_filter)
+    """PENDING_HOD: CDC moves waiting on the HOD. OPEN: everything still in progress (with guides too). ALL: every request."""
+    if status_filter == "ALL":
+        conditions = []
+    elif status_filter == "OPEN":
+        conditions = [ChangeRequest.status.in_(ChangeRequestStatus.OPEN)]
+    else:
+        conditions = [ChangeRequest.status == status_filter]
+    requests = await change_request_service.list_requests(db, *conditions)
     return await change_request_service.to_responses(db, requests)
 
 

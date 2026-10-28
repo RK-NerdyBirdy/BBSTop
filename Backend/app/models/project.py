@@ -28,7 +28,7 @@ class ApplicationStatus:
     GUIDE_APPROVED = "GUIDE_APPROVED"  # locked; visible to HOD; counts toward guide cap
     GUIDE_REJECTED = "GUIDE_REJECTED"  # leader can edit and resubmit
     GUIDE_FULL = "GUIDE_FULL"          # guide hit their cap; leader picks another guide
-    DISSOLVED = "DISSOLVED"            # last member left (CDC) or HOD approved team deletion
+    DISSOLVED = "DISSOLVED"            # last member moved out, or the guide approved team deletion
     # CDC
     PENDING_HOD = "PENDING_HOD"
     CDC_APPROVED = "CDC_APPROVED"
@@ -51,8 +51,8 @@ class MemberStatus:
     INVITED = "INVITED"
     ACCEPTED = "ACCEPTED"
     DECLINED = "DECLINED"
-    REMOVED = "REMOVED"    # removed by leader before approval, or via HOD-approved change
-    RELEASED = "RELEASED"  # application withdrawn / dissolved / member converted to CDC
+    REMOVED = "REMOVED"    # removed by leader before approval, or via a guide-approved team change
+    RELEASED = "RELEASED"  # application withdrawn / dissolved / member moved to CDC or another category
 
 
 class ProjectApplication(Base):
@@ -85,6 +85,9 @@ class ProjectApplication(Base):
         nullable=True,
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Set when a student registers this after an approved CATEGORY_CHANGE: lets it proceed while registration is closed.
+    # Plain integer (no FK) to avoid a circular reference with change_request.
+    origin_request_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     guide_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     hod_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

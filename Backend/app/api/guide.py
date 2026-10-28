@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +11,14 @@ from app.models.semester import Semester
 from app.schemas.project import (
     ApplicationResponse,
     AuditLogResponse,
+    ChangeRequestResponse,
     FacultyResponse,
     GuideDashboard,
     Remarks,
     RequiredRemarks,
 )
+from app.services.change_request_service import change_request_service
+from app.services.document_service import document_service
 from app.services.project_service import project_service
 
 router = APIRouter()
@@ -122,3 +125,50 @@ async def activity(
         .limit(50)
     )).scalars().all()
     return [AuditLogResponse.model_validate(r, from_attributes=True) for r in rows]
+
+
+# ---------- change requests ----------
+
+@router.get("/change-requests", response_model=list[ChangeRequestResponse])
+async def list_change_requests(
+    waiting: bool = True,
+    db: AsyncSession = Depends(get_db),
+    guide: Faculty = Depends(get_current_guide),
+) -> list[ChangeRequestResponse]:
+    """waiting=true: requests this guide must decide (on their projects, or asking them to take one over). false: all involving them."""
+    requests = await change_request_service.list_for_guide(db, guide, waiting)
+    return await change_request_service.to_responses(db, requests)
+
+
+@router.post("/change-requests/{request_id}/approve", response_model=ChangeRequestResponse)
+async def approve_change_request(
+    request_id: int,
+    payload: Remarks,
+    db: AsyncSession = Depends(get_db),
+    guide: Faculty = Depends(get_current_guide),
+) -> ChangeRequestResponse:
+    request = await change_request_service.guide_decide(db, guide, request_id, True, payload.remarks)
+    return (await change_request_service.to_responses(db, [request]))[0]
+
+
+@router.post("/change-requests/{request_id}/decline", response_model=ChangeRequestResponse)
+async def decline_change_request(
+    request_id: int,
+    payload: RequiredRemarks,
+    db: AsyncSession = Depends(get_db),
+    guide: Faculty = Depends(get_current_guide),
+) -> ChangeRequestResponse:
+    request = await change_request_service.guide_decide(db, guide, request_id, False, payload.remarks)
+    return (await change_request_service.to_responses(db, [request]))[0]
+
+
+@router.get("/documents/{document_id}")
+async def download_document(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    guide: Faculty = Depends(get_current_guide),
+):
+    """Proof attached to a change request on one of this guide's projects."""
+    if not await change_request_service.guide_can_see_document(db, guide, document_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return await document_service.download(db, document_id)

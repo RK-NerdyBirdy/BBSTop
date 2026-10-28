@@ -12,12 +12,14 @@ from app.models.student import Student
 from app.models.student_semester_assignment import StudentSemesterAssignment
 from app.schemas.project import (
     ApplicationResponse,
+    ApprovedMove,
     CdcCreate,
     CdcResubmit,
     ChangeRequestCreate,
     ChangeRequestResponse,
     DocumentSummary,
     FacultyCapacity,
+    GuideChangeDetails,
     InhouseCreate,
     InhouseUpdate,
     InviteCreate,
@@ -86,17 +88,30 @@ async def registration_overview(
         )
     )).scalars().all()
 
-    return [
-        RegistrationSemester(
+    result = []
+    for semester, batch_name in rows:
+        application = responses.get(current.get(semester.semester_id))
+        # Moved out of a team by a category change and not on a new one yet: they register again
+        move = None
+        if application is None:
+            request = await project_service.approved_move(db, student.register_number, semester.semester_id)
+            if request is not None:
+                move = ApprovedMove(
+                    request_id=request.request_id,
+                    from_subtype=request.payload["from_subtype"],
+                    to_subtype=request.payload["to_subtype"],
+                    decided_at=request.decided_at,
+                )
+        result.append(RegistrationSemester(
             semester_id=semester.semester_id,
             semester_name=semester.semester_name,
             registration_open=semester.registration_open,
             batch_name=batch_name,
-            application=responses.get(current.get(semester.semester_id)),
+            application=application,
             pending_invites=sum(1 for s in invite_rows if s == semester.semester_id),
-        )
-        for semester, batch_name in rows
-    ]
+            approved_move=move,
+        ))
+    return result
 
 
 @router.get("/rules", response_model=SettingsResponse)
@@ -308,6 +323,29 @@ async def cancel_change_request(
     student: Student = Depends(get_current_student_record),
 ) -> ChangeRequestResponse:
     request = await change_request_service.cancel(db, student, request_id)
+    return (await change_request_service.to_responses(db, [request]))[0]
+
+
+@router.post("/change-requests/{request_id}/escalate", response_model=ChangeRequestResponse)
+async def escalate_change_request(
+    request_id: int,
+    db: AsyncSession = Depends(get_db),
+    student: Student = Depends(get_current_student_record),
+) -> ChangeRequestResponse:
+    """Send a CDC move the guide declined to the HOD."""
+    request = await change_request_service.escalate(db, student, request_id)
+    return (await change_request_service.to_responses(db, [request]))[0]
+
+
+@router.post("/change-requests/{request_id}/new-guide", response_model=ChangeRequestResponse)
+async def pick_new_guide(
+    request_id: int,
+    payload: GuideChangeDetails,
+    db: AsyncSession = Depends(get_db),
+    student: Student = Depends(get_current_student_record),
+) -> ChangeRequestResponse:
+    """After the current guide agreed to a guide change: ask a new guide (and optionally update the details)."""
+    request = await change_request_service.submit_guide_details(db, student, request_id, payload)
     return (await change_request_service.to_responses(db, [request]))[0]
 
 
