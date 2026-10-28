@@ -45,8 +45,14 @@ class FacultyCapacity(BaseModel):
 
 # ---------- Settings ----------
 
+class TeamSize(BaseModel):
+    min: int
+    max: int
+
+
 class SettingsResponse(BaseModel):
-    max_team_size: int
+    team_size: dict[str, TeamSize]
+    category_change_proof: list[str]
     default_guide_cap: int
     enabled_subtypes: list[str]
     cdc_enabled: bool
@@ -55,7 +61,8 @@ class SettingsResponse(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    max_team_size: int | None = None
+    team_size: dict[str, TeamSize] | None = None
+    category_change_proof: list[str] | None = None
     default_guide_cap: int | None = None
     enabled_subtypes: list[str] | None = None
     cdc_enabled: bool | None = None
@@ -142,6 +149,7 @@ class ApplicationResponse(BaseModel):
     title: str | None
     abstract: str | None
     status: str
+    origin_request_id: int | None = None  # registered after an approved category change (category is fixed)
     guide: GuideSummary | None
     proof_document: DocumentSummary | None
     guide_remarks: str | None
@@ -166,6 +174,15 @@ class StudentLookupResponse(BaseModel):
     available: bool  # false if already in a team / CDC for this semester
 
 
+class ApprovedMove(BaseModel):
+    """A guide-approved category change: the student registers a new project in to_subtype, even if registration is closed."""
+
+    request_id: int
+    from_subtype: str
+    to_subtype: str
+    decided_at: datetime | None
+
+
 class RegistrationSemester(BaseModel):
     semester_id: int
     semester_name: str
@@ -173,6 +190,7 @@ class RegistrationSemester(BaseModel):
     batch_name: str
     application: ApplicationResponse | None
     pending_invites: int
+    approved_move: ApprovedMove | None = None
 
 
 class GuideDashboard(BaseModel):
@@ -190,10 +208,18 @@ class ChangeRequestCreate(BaseModel):
     reason: str = Field(..., min_length=10, max_length=3000)
     add: list[str] = Field(default_factory=list, max_length=9)        # TEAM_CHANGE
     remove: list[str] = Field(default_factory=list, max_length=9)     # TEAM_CHANGE
-    to_faculty_id: int | None = None                                   # GUIDE_CHANGE
     title: str | None = Field(default=None, min_length=3, max_length=255)       # TITLE_ABSTRACT
     abstract: str | None = Field(default=None, min_length=20, max_length=5000)  # TITLE_ABSTRACT
-    document_id: int | None = None                                     # CDC_CONVERSION
+    to_subtype: str | None = None                                      # CATEGORY_CHANGE
+    document_id: int | None = None                                     # CDC_CONVERSION, CATEGORY_CHANGE
+
+
+class GuideChangeDetails(BaseModel):
+    """Sent once the current guide has agreed to a GUIDE_CHANGE: the new guide and, optionally, new details."""
+
+    to_faculty_id: int
+    title: str | None = Field(default=None, min_length=3, max_length=255)
+    abstract: str | None = Field(default=None, min_length=20, max_length=5000)
 
 
 class ChangeRequestResponse(BaseModel):
@@ -207,6 +233,10 @@ class ChangeRequestResponse(BaseModel):
     reason: str
     document: DocumentSummary | None
     status: str
+    guide_name: str | None        # the project's guide, who acknowledges the request
+    new_guide_name: str | None    # GUIDE_CHANGE: the guide being asked to take over
+    guide_remarks: str | None
+    guide_decided_at: datetime | None
     hod_remarks: str | None
     decided_at: datetime | None
     created_at: datetime

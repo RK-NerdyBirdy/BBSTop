@@ -8,7 +8,10 @@ from app.models.project import ProjectSubtype
 
 # Rules the HOD can edit. Missing rows fall back to these defaults.
 DEFAULTS: dict[str, object] = {
-    "max_team_size": 3,
+    # Team size per in-house category: {"CAPSTONE": {"min": 1, "max": 3}, ...}
+    "team_size": {subtype: {"min": 1, "max": 3} for subtype in ProjectSubtype.ALL},
+    # Moving into these categories after approval needs a proof upload (e.g. an internship offer)
+    "category_change_proof": [ProjectSubtype.NON_CDC],
     "default_guide_cap": 4,
     "enabled_subtypes": list(ProjectSubtype.ALL),
     "cdc_enabled": True,
@@ -19,9 +22,23 @@ DEFAULTS: dict[str, object] = {
 
 
 def _validate(key: str, value: object) -> object:
-    if key == "max_team_size":
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10:
-            raise ValueError("max_team_size must be a whole number between 1 and 10")
+    if key == "team_size":
+        if not isinstance(value, dict) or set(value) != set(ProjectSubtype.ALL):
+            raise ValueError(f"team_size needs a min and max for each of {', '.join(ProjectSubtype.ALL)}")
+        cleaned = {}
+        for subtype in ProjectSubtype.ALL:
+            limits = value[subtype]
+            low, high = (limits.get("min"), limits.get("max")) if isinstance(limits, dict) else (None, None)
+            if not all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 10 for v in (low, high)):
+                raise ValueError(f"{subtype}: team size limits must be whole numbers between 1 and 10")
+            if low > high:
+                raise ValueError(f"{subtype}: the minimum team size can't be more than the maximum")
+            cleaned[subtype] = {"min": low, "max": high}
+        value = cleaned
+    elif key == "category_change_proof":
+        if not isinstance(value, list) or not all(v in ProjectSubtype.ALL for v in value):
+            raise ValueError(f"category_change_proof must be a list drawn from {', '.join(ProjectSubtype.ALL)}")
+        value = [v for v in ProjectSubtype.ALL if v in value]
     elif key == "default_guide_cap":
         if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100:
             raise ValueError("default_guide_cap must be a whole number between 0 and 100")
@@ -54,6 +71,11 @@ class SettingsService:
     async def get(self, db: AsyncSession, key: str) -> object:
         row = await db.get(AppSetting, key)
         return row.value if row is not None else DEFAULTS[key]
+
+    async def team_limits(self, db: AsyncSession, subtype: str | None) -> tuple[int, int]:
+        """(min, max) team size for an in-house category."""
+        limits = (await self.get(db, "team_size")).get(subtype or "", {"min": 1, "max": 3})
+        return limits["min"], limits["max"]
 
     async def update(self, db: AsyncSession, changes: dict[str, object]) -> dict[str, dict]:
         """Validate and stage changes. Returns {key: {"from": old, "to": new}} for the audit log. Caller commits."""

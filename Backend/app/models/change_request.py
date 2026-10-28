@@ -10,21 +10,38 @@ from app.models.base import Base
 
 
 class ChangeRequestType:
-    TEAM_CHANGE = "TEAM_CHANGE"        # payload: {"add": [reg], "remove": [reg], "consents": {reg: bool}}
-    GUIDE_CHANGE = "GUIDE_CHANGE"      # payload: {"from_faculty_id": int, "to_faculty_id": int}
-    TITLE_ABSTRACT = "TITLE_ABSTRACT"  # payload: {"title": str, "abstract": str}
-    TEAM_DELETION = "TEAM_DELETION"    # payload: {}
-    CDC_CONVERSION = "CDC_CONVERSION"  # payload: {"register_number": reg}; document_id = proof
-    ALL = (TEAM_CHANGE, GUIDE_CHANGE, TITLE_ABSTRACT, TEAM_DELETION, CDC_CONVERSION)
+    TEAM_CHANGE = "TEAM_CHANGE"          # payload: {"add": [reg], "remove": [reg], "consents": {reg: bool}}
+    GUIDE_CHANGE = "GUIDE_CHANGE"        # payload: {"from_faculty_id", "to_faculty_id", "title", "abstract", "declines": [...]}
+    TITLE_ABSTRACT = "TITLE_ABSTRACT"    # payload: {"title": {"from", "to"}, "abstract": {"from", "to"}}
+    TEAM_DELETION = "TEAM_DELETION"      # payload: {}
+    CDC_CONVERSION = "CDC_CONVERSION"    # payload: {"register_number": reg, "escalated": bool}; document_id = proof
+    CATEGORY_CHANGE = "CATEGORY_CHANGE"  # payload: {"register_number", "from_subtype", "to_subtype"}; document_id = optional proof
+    ALL = (TEAM_CHANGE, GUIDE_CHANGE, TITLE_ABSTRACT, TEAM_DELETION, CDC_CONVERSION, CATEGORY_CHANGE)
 
 
 class ChangeRequestStatus:
-    PENDING_CONSENT = "PENDING_CONSENT"  # TEAM_CHANGE waiting on students being added
-    PENDING_HOD = "PENDING_HOD"
+    """Every change goes to the project's guide first. Only CDC_CONVERSION then needs the HOD.
+
+    TEAM_CHANGE      [PENDING_CONSENT ->] PENDING_GUIDE -> APPROVED
+    TITLE_ABSTRACT,
+    TEAM_DELETION,
+    CATEGORY_CHANGE  PENDING_GUIDE -> APPROVED (the mover then registers a new project with a guide)
+    GUIDE_CHANGE     PENDING_GUIDE -> AWAITING_DETAILS (team picks a new guide) -> PENDING_NEW_GUIDE -> APPROVED
+                     (a declining new guide sends it back to AWAITING_DETAILS)
+    CDC_CONVERSION   PENDING_GUIDE -> PENDING_HOD -> APPROVED
+                     (a declining guide leaves it GUIDE_DECLINED; the student may escalate to the HOD)
+    """
+
+    PENDING_CONSENT = "PENDING_CONSENT"      # TEAM_CHANGE waiting on students being added
+    PENDING_GUIDE = "PENDING_GUIDE"          # waiting on the project's current guide
+    GUIDE_DECLINED = "GUIDE_DECLINED"        # CDC only: guide declined, student may escalate to the HOD
+    PENDING_HOD = "PENDING_HOD"              # CDC only
+    AWAITING_DETAILS = "AWAITING_DETAILS"    # GUIDE_CHANGE: current guide agreed, team to pick a new guide
+    PENDING_NEW_GUIDE = "PENDING_NEW_GUIDE"  # GUIDE_CHANGE: waiting on the new guide
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
-    OPEN = (PENDING_CONSENT, PENDING_HOD)
+    OPEN = (PENDING_CONSENT, PENDING_GUIDE, GUIDE_DECLINED, PENDING_HOD, AWAITING_DETAILS, PENDING_NEW_GUIDE)
 
 
 class ChangeRequest(Base):
@@ -49,6 +66,10 @@ class ChangeRequest(Base):
         nullable=True,
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The project's guide acknowledging (or declining) the request
+    guide_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    guide_decided_by: Mapped[int | None] = mapped_column(ForeignKey("faculty.faculty_id"), nullable=True)
+    guide_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hod_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("admin.admin_id"), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

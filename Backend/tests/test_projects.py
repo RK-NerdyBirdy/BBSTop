@@ -71,8 +71,9 @@ async def test_team_size_capped(client, world):
 
 
 async def test_hod_can_change_team_size_rule(client, world):
-    r = await client.put("/api/admin/settings", headers=world.hod, json={"max_team_size": 4})
-    assert r.json()["max_team_size"] == 4
+    sizes = {"CAPSTONE": {"min": 1, "max": 4}, "NON_CDC": {"min": 1, "max": 1}, "SAP": {"min": 1, "max": 3}}
+    r = await client.put("/api/admin/settings", headers=world.hod, json={"team_size": sizes})
+    assert r.json()["team_size"]["CAPSTONE"] == {"min": 1, "max": 4}
     assert (await create_team(client, world, 1, [2, 3, 4])).status_code == 201
 
 
@@ -258,11 +259,14 @@ async def test_proof_must_be_pdf_or_image_and_own(client, world):
     assert (await client.get(f"/api/admin/documents/{doc}", headers=world.hod)).content == PDF
 
 
-async def convert(client, w, student: int, application_id: int) -> dict:
+async def convert(client, w, student: int, application_id: int, faculty_id: int = 1) -> dict:
     r = await client.post(f"/api/student/projects/{application_id}/change-requests", headers=w.student(student), json={
         "request_type": "CDC_CONVERSION", "reason": "Got an internship offer", "document_id": await upload_proof(client, w, student),
     })
     assert r.status_code == 201, r.text
+    assert r.json()["status"] == "PENDING_GUIDE"
+    r = await client.post(f"/api/guide/change-requests/{r.json()['request_id']}/approve", headers=w.guide(faculty_id), json={})
+    assert r.json()["status"] == "PENDING_HOD", r.text
     r = await client.post(f"/api/admin/change-requests/{r.json()['request_id']}/approve", headers=w.hod, json={})
     assert r.status_code == 200, r.text
     return r.json()
@@ -296,7 +300,7 @@ async def test_cdc_conversion_of_last_member_dissolves_and_frees_slot(client, wo
     app = await approved_team(client, world, 1, faculty_id=2)  # guide 2 has cap 1, now full
     assert (await create_team(client, world, 3, faculty_id=2)).status_code == 409
 
-    await convert(client, world, 1, app["application_id"])
+    await convert(client, world, 1, app["application_id"], faculty_id=2)
     project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
     assert project["status"] == "DISSOLVED"
     assert (await create_team(client, world, 3, faculty_id=2)).status_code == 201
@@ -323,9 +327,11 @@ async def test_team_change_needs_new_member_consent(client, world):
     pending = (await client.get("/api/student/projects/change-requests/consents", headers=world.student(4))).json()
     assert [p["request_id"] for p in pending] == [request_id]
     r = await client.post(f"/api/student/projects/change-requests/{request_id}/consent", headers=world.student(4), params={"accept": True})
-    assert r.json()["status"] == "PENDING_HOD"
+    assert r.json()["status"] == "PENDING_GUIDE"
 
-    r = await client.post(f"/api/admin/change-requests/{request_id}/approve", headers=world.hod, json={})
+    # The guide decides team changes; the HOD isn't involved
+    assert (await client.post(f"/api/admin/change-requests/{request_id}/approve", headers=world.hod, json={})).status_code == 400
+    r = await client.post(f"/api/guide/change-requests/{request_id}/approve", headers=world.guide(1), json={})
     assert r.json()["status"] == "APPROVED"
     project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
     assert sorted(m["register_number"] for m in project["members"] if m["status"] == "ACCEPTED") == [world.reg(1), world.reg(4)]
@@ -339,36 +345,205 @@ async def test_only_leader_raises_team_requests(client, world):
     assert r.status_code == 403
 
 
-async def test_guide_change_respects_new_guide_cap(client, world):
+async def guide_change(client, w, leader: int, application_id: int, faculty_id: int = 1) -> int:
+    r = await client.post(f"/api/student/projects/{application_id}/change-requests", headers=w.student(leader), json={
+        "request_type": "GUIDE_CHANGE", "reason": "Better domain match",
+    })
+    assert r.status_code == 201, r.text
+    r = await client.post(f"/api/guide/change-requests/{r.json()['request_id']}/approve", headers=w.guide(faculty_id), json={})
+    assert r.json()["status"] == "AWAITING_DETAILS", r.text
+    return r.json()["request_id"]
+
+
+async def test_guide_change_current_guide_then_new_guide(client, world):
     await approved_team(client, world, 5, faculty_id=2)  # guide 2 full
     app = await approved_team(client, world, 1)
-    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(1), json={
-        "request_type": "GUIDE_CHANGE", "reason": "Better domain match", "to_faculty_id": 2,
-    })
-    assert r.status_code == 409
+    request_id = await guide_change(client, world, 1, app["application_id"])
 
-    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(1), json={
-        "request_type": "GUIDE_CHANGE", "reason": "Better domain match", "to_faculty_id": 3,
+    r = await client.post(f"/api/student/projects/change-requests/{request_id}/new-guide", headers=world.student(1), json={"to_faculty_id": 2})
+    assert r.status_code == 409
+    r = await client.post(f"/api/student/projects/change-requests/{request_id}/new-guide", headers=world.student(1), json={
+        "to_faculty_id": 3, "title": "Sharper title",
     })
-    await client.post(f"/api/admin/change-requests/{r.json()['request_id']}/approve", headers=world.hod, json={})
+    assert r.json()["status"] == "PENDING_NEW_GUIDE"
+    assert r.json()["new_guide_name"] == "Guide Three"
+
+    # Only the new guide answers now; the team keeps guide 1 until then
+    assert (await client.post(f"/api/guide/change-requests/{request_id}/approve", headers=world.guide(1), json={})).status_code == 403
+    waiting = (await client.get("/api/guide/change-requests", headers=world.guide(3))).json()
+    assert [w["request_id"] for w in waiting] == [request_id]
+    r = await client.post(f"/api/guide/change-requests/{request_id}/approve", headers=world.guide(3), json={})
+    assert r.json()["status"] == "APPROVED"
     project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
     assert project["guide"]["faculty_id"] == 3
+    assert project["title"] == "Sharper title"
 
 
-async def test_team_deletion_dissolves(client, world):
+async def test_new_guide_declining_lets_team_pick_again(client, world):
+    app = await approved_team(client, world, 1)
+    request_id = await guide_change(client, world, 1, app["application_id"])
+    await client.post(f"/api/student/projects/change-requests/{request_id}/new-guide", headers=world.student(1), json={"to_faculty_id": 3})
+    r = await client.post(f"/api/guide/change-requests/{request_id}/decline", headers=world.guide(3), json={"remarks": "No time this term"})
+    assert r.json()["status"] == "AWAITING_DETAILS"
+    assert r.json()["payload"]["declines"][0]["remarks"] == "No time this term"
+    project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
+    assert project["guide"]["faculty_id"] == 1
+
+
+async def test_guide_decline_ends_in_house_requests(client, world):
+    app = await approved_team(client, world, 1)
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(1), json={
+        "request_type": "TITLE_ABSTRACT", "reason": "Scope changed a lot", "title": "New title",
+    })
+    request_id = r.json()["request_id"]
+    assert (await client.post(f"/api/guide/change-requests/{request_id}/decline", headers=world.guide(1), json={})).status_code == 422
+    r = await client.post(f"/api/guide/change-requests/{request_id}/decline", headers=world.guide(1), json={"remarks": "Keep the old scope"})
+    assert r.json()["status"] == "REJECTED"
+    assert r.json()["guide_remarks"] == "Keep the old scope"
+    assert (await client.post(f"/api/student/projects/change-requests/{request_id}/escalate", headers=world.student(1))).status_code == 400
+
+
+async def test_team_deletion_goes_to_guide(client, world):
     app = await approved_team(client, world, 1, [2])
     r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(1), json={
         "request_type": "TEAM_DELETION", "reason": "We want to stop the project",
     })
-    r = await client.post(f"/api/admin/change-requests/{r.json()['request_id']}/reject", headers=world.hod, json={"remarks": "Talk to me first"})
-    assert r.json()["status"] == "REJECTED"
-    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(1), json={
-        "request_type": "TEAM_DELETION", "reason": "We want to stop the project",
-    })
-    await client.post(f"/api/admin/change-requests/{r.json()['request_id']}/approve", headers=world.hod, json={})
+    await client.post(f"/api/guide/change-requests/{r.json()['request_id']}/approve", headers=world.guide(1), json={})
     project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
     assert project["status"] == "DISSOLVED"
     assert (await create_team(client, world, 2)).status_code == 201
+
+
+# ---------------------------------------------------------------- CDC moves: guide, then HOD
+
+async def test_cdc_move_declined_by_guide_can_be_escalated(client, world):
+    app = await approved_team(client, world, 1, [2])
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CDC_CONVERSION", "reason": "Got an internship offer", "document_id": await upload_proof(client, world, 2),
+    })
+    request_id = r.json()["request_id"]
+    # The guide can open the proof before deciding
+    assert (await client.get(f"/api/guide/documents/{r.json()['document']['document_id']}", headers=world.guide(1))).content == PDF
+    assert (await client.get(f"/api/guide/documents/{r.json()['document']['document_id']}", headers=world.guide(2))).status_code == 404
+
+    r = await client.post(f"/api/guide/change-requests/{request_id}/decline", headers=world.guide(1), json={"remarks": "Finish the prototype first"})
+    assert r.json()["status"] == "GUIDE_DECLINED"
+    assert (await client.get("/api/admin/change-requests", headers=world.hod)).json() == []
+
+    r = await client.post(f"/api/student/projects/change-requests/{request_id}/escalate", headers=world.student(2))
+    assert r.json()["status"] == "PENDING_HOD"
+    assert r.json()["payload"]["escalated"] is True
+    r = await client.post(f"/api/admin/change-requests/{request_id}/approve", headers=world.hod, json={})
+    assert r.json()["status"] == "APPROVED"
+
+
+async def test_cdc_move_not_shown_to_hod_before_guide(client, world):
+    app = await approved_team(client, world, 1, [2])
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CDC_CONVERSION", "reason": "Got an internship offer", "document_id": await upload_proof(client, world, 2),
+    })
+    assert (await client.post(f"/api/admin/change-requests/{r.json()['request_id']}/approve", headers=world.hod, json={})).status_code == 400
+    assert len((await client.get("/api/admin/change-requests", headers=world.hod, params={"status_filter": "OPEN"})).json()) == 1
+
+
+# ---------------------------------------------------------------- category moves: guide only, then a new guide
+
+async def move(client, w, student: int, application_id: int, to_subtype: str, proof: bool = True, faculty_id: int = 1) -> dict:
+    body = {"request_type": "CATEGORY_CHANGE", "reason": "Got a non-CDC internship", "to_subtype": to_subtype}
+    if proof:
+        body["document_id"] = await upload_proof(client, w, student)
+    r = await client.post(f"/api/student/projects/{application_id}/change-requests", headers=w.student(student), json=body)
+    assert r.status_code == 201, r.text
+    r = await client.post(f"/api/guide/change-requests/{r.json()['request_id']}/approve", headers=w.guide(faculty_id), json={})
+    assert r.json()["status"] == "APPROVED", r.text
+    return r.json()
+
+
+async def test_category_move_needs_proof_only_for_internships(client, world):
+    app = await approved_team(client, world, 1, [2, 3])
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CATEGORY_CHANGE", "reason": "Got a non-CDC internship", "to_subtype": "NON_CDC",
+    })
+    assert r.status_code == 400
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CATEGORY_CHANGE", "reason": "Moving to the SAP track", "to_subtype": "CAPSTONE",
+    })
+    assert r.status_code == 400  # same category
+    await move(client, world, 3, app["application_id"], "SAP", proof=False)
+
+
+async def test_category_move_releases_member_and_lets_them_register_while_closed(client, world):
+    app = await approved_team(client, world, 1, [2])
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/registration-open", headers=world.hod, json={"registration_open": False})
+    assert (await create_team(client, world, 9)).status_code == 400  # closed for everyone else
+
+    await move(client, world, 2, app["application_id"], "NON_CDC")
+    project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
+    assert project["status"] == "GUIDE_APPROVED"
+    assert [m["register_number"] for m in project["members"] if m["status"] == "ACCEPTED"] == [world.reg(1)]
+
+    overview = (await client.get("/api/student/projects/registration", headers=world.student(2))).json()
+    mine = next(s for s in overview if s["semester_id"] == world.semester_id)
+    assert mine["application"] is None
+    assert mine["approved_move"]["to_subtype"] == "NON_CDC"
+
+    # Only in the category the guide approved, and the same guide is fine if they have room
+    assert (await create_team(client, world, 2, subtype="SAP")).status_code == 400
+    r = await create_team(client, world, 2, subtype="NON_CDC")
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "PENDING_GUIDE"
+    r = await client.post(f"/api/guide/applications/{r.json()['application_id']}/approve", headers=world.guide(1), json={})
+    assert r.json()["status"] == "GUIDE_APPROVED"
+
+
+async def test_whole_team_moves_one_by_one_then_regroups(client, world):
+    app = await approved_team(client, world, 1, [2])
+    await move(client, world, 1, app["application_id"], "SAP", proof=False)
+    project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
+    assert project["leader_register_number"] == world.reg(2)  # leadership passed on
+
+    # 2 is still on the old team, so 1 can't invite them yet
+    assert (await create_team(client, world, 1, [2], subtype="SAP")).status_code == 409
+
+    await move(client, world, 2, app["application_id"], "SAP", proof=False)
+    project = (await client.get(f"/api/admin/projects/{app['application_id']}", headers=world.hod)).json()
+    assert project["status"] == "DISSOLVED"
+
+    r = await create_team(client, world, 1, [2], subtype="SAP", faculty_id=3)
+    assert r.status_code == 201, r.text
+    r = await client.post(f"/api/student/projects/invites/{await invite_id(client, world, 2, r.json()['application_id'])}/accept", headers=world.student(2))
+    assert r.json()["status"] == "PENDING_GUIDE"
+
+
+async def test_one_open_move_per_student(client, world):
+    app = await approved_team(client, world, 1, [2])
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CATEGORY_CHANGE", "reason": "Moving to the SAP track", "to_subtype": "SAP",
+    })
+    assert r.status_code == 201
+    r = await client.post(f"/api/student/projects/{app['application_id']}/change-requests", headers=world.student(2), json={
+        "request_type": "CDC_CONVERSION", "reason": "Got an internship offer", "document_id": await upload_proof(client, world, 2),
+    })
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------- team size per category
+
+async def test_minimum_team_size_per_category(client, world):
+    sizes = {"CAPSTONE": {"min": 2, "max": 3}, "NON_CDC": {"min": 1, "max": 1}, "SAP": {"min": 1, "max": 3}}
+    await client.put("/api/admin/settings", headers=world.hod, json={"team_size": sizes})
+    r = await create_team(client, world, 1)
+    assert r.status_code == 400
+    assert "at least 2" in r.json()["detail"]
+    assert (await create_team(client, world, 1, [2])).status_code == 201
+    r = await create_team(client, world, 3, [4], subtype="NON_CDC")
+    assert "at most 1" in r.json()["detail"]
+    assert (await create_team(client, world, 3, subtype="NON_CDC")).status_code == 201
+
+
+async def test_bad_team_size_rule_rejected(client, world):
+    sizes = {"CAPSTONE": {"min": 3, "max": 2}, "NON_CDC": {"min": 1, "max": 1}, "SAP": {"min": 1, "max": 3}}
+    assert (await client.put("/api/admin/settings", headers=world.hod, json={"team_size": sizes})).status_code == 422
 
 
 # ---------------------------------------------------------------- audit & auth

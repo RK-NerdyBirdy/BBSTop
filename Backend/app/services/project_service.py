@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.crud.faculty import approved_counts, effective_cap, get_faculty, get_faculty_for_update
 from app.models.batch import Batch
+from app.models.change_request import ChangeRequest, ChangeRequestStatus, ChangeRequestType
 from app.models.document import Document
 from app.models.faculty import Faculty
 from app.models.project import (
@@ -161,6 +162,7 @@ class ProjectService:
                     title=a.title,
                     abstract=a.abstract,
                     status=a.status,
+                    origin_request_id=a.origin_request_id,
                     guide=GuideSummary(
                         faculty_id=a.faculty.faculty_id,
                         employee_id=a.faculty.employee_id,
@@ -222,13 +224,40 @@ class ProjectService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def _require_open_semester(db: AsyncSession, semester_id: int) -> Semester:
+    async def _require_open_semester(db: AsyncSession, semester_id: int, application: ProjectApplication | None = None) -> Semester:
         semester = await db.get(Semester, semester_id)
         if semester is None:
             raise _error(status.HTTP_404_NOT_FOUND, "Semester not found")
-        if not semester.registration_open:
+        # A project registered after a category change carries on while registration is closed
+        if not semester.registration_open and not (application and application.origin_request_id):
             raise _error(status.HTTP_400_BAD_REQUEST, "Project registration is closed for this semester")
         return semester
+
+    @staticmethod
+    async def approved_move(db: AsyncSession, register_number: str, semester_id: int) -> ChangeRequest | None:
+        """The student's latest guide-approved category change in this semester, if any."""
+        result = await db.execute(
+            select(ChangeRequest)
+            .join(ProjectApplication, ProjectApplication.application_id == ChangeRequest.application_id)
+            .where(
+                ProjectApplication.semester_id == semester_id,
+                ChangeRequest.request_type == ChangeRequestType.CATEGORY_CHANGE,
+                ChangeRequest.status == ChangeRequestStatus.APPROVED,
+                ChangeRequest.requested_by == register_number,
+            )
+            .order_by(ChangeRequest.decided_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def _check_team_size(db: AsyncSession, subtype: str | None, size: int, *, check_min: bool = True) -> None:
+        low, high = await settings_service.team_limits(db, subtype)
+        label = (subtype or "").replace("_", "-").title()
+        if size > high:
+            raise _error(status.HTTP_400_BAD_REQUEST, f"A team can have at most {high} members")
+        if check_min and size < low:
+            raise _error(status.HTTP_400_BAD_REQUEST, f"A {label} team needs at least {low} members")
 
     @staticmethod
     async def _lock_students(db: AsyncSession, register_numbers: set[str]) -> dict[str, Student]:
@@ -369,15 +398,25 @@ class ProjectService:
         faculty_id: int,
         teammates: list[str],
     ) -> ProjectApplication:
-        await self._require_open_semester(db, semester_id)
-        await self._validate_subtype(db, subtype)
+        semester = await db.get(Semester, semester_id)
+        if semester is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "Semester not found")
+        # After a guide-approved category change the student registers again, even with registration closed,
+        # but only in the category they moved to
+        origin: ChangeRequest | None = None
+        if not semester.registration_open:
+            origin = await self.approved_move(db, student.register_number, semester_id)
+            if origin is None:
+                raise _error(status.HTTP_400_BAD_REQUEST, "Project registration is closed for this semester")
+            if subtype != origin.payload["to_subtype"]:
+                raise _error(status.HTTP_400_BAD_REQUEST, "Register in the category your guide approved the move to")
+        else:
+            await self._validate_subtype(db, subtype)
 
         teammates = [t.strip().upper() for t in teammates if t.strip()]
         if len(set(teammates)) != len(teammates):
             raise _error(status.HTTP_400_BAD_REQUEST, "The same teammate is listed twice")
-        max_team = await settings_service.get(db, "max_team_size")
-        if 1 + len(teammates) > max_team:
-            raise _error(status.HTTP_400_BAD_REQUEST, f"A team can have at most {max_team} members")
+        await self._check_team_size(db, subtype, 1 + len(teammates))
 
         await self._lock_students(db, {student.register_number})
         if await self.get_assignment(db, student.register_number, semester_id) is None:
@@ -397,6 +436,7 @@ class ProjectService:
             title=title.strip(),
             abstract=abstract.strip(),
             faculty_id=faculty.faculty_id,
+            origin_request_id=origin.request_id if origin else None,
             status=S.FORMING if invitees else S.PENDING_GUIDE,
             submitted_at=None if invitees else _now(),
         )
@@ -429,6 +469,7 @@ class ProjectService:
             "faculty_id": faculty.faculty_id,
             "invited": teammates,
             "status": application.status,
+            "origin_request_id": application.origin_request_id,
         })
         await db.commit()
 
@@ -498,8 +539,10 @@ class ProjectService:
             invite.status = MemberStatus.ACCEPTED
             invite.responded_at = _now()
             await self._decline_other_invites(db, student.register_number, application.semester_id, except_member_id=member_id)
-            # Everyone has answered and nobody is still pending -> goes to the guide automatically
-            if not any(m.status == MemberStatus.INVITED for m in application.members):
+            # Everyone has answered, nobody is still pending and the team is big enough -> goes to the guide
+            low, _ = await settings_service.team_limits(db, application.project_subtype)
+            accepted = sum(1 for m in application.members if m.status == MemberStatus.ACCEPTED)
+            if not any(m.status == MemberStatus.INVITED for m in application.members) and accepted >= low:
                 application.status = S.PENDING_GUIDE
                 application.submitted_at = _now()
         else:
@@ -526,14 +569,12 @@ class ProjectService:
         self._require_leader(application, student)
         if application.project_type != ProjectType.INHOUSE or application.status not in EDITABLE:
             raise _error(status.HTTP_400_BAD_REQUEST, "The team can't be changed at this stage")
-        await self._require_open_semester(db, application.semester_id)
+        await self._require_open_semester(db, application.semester_id, application)
 
         register_number = register_number.strip().upper()
         if any(m.register_number == register_number for m in self._live_members(application)):
             raise _error(status.HTTP_400_BAD_REQUEST, f"{register_number} is already on this team")
-        max_team = await settings_service.get(db, "max_team_size")
-        if len(self._live_members(application)) + 1 > max_team:
-            raise _error(status.HTTP_400_BAD_REQUEST, f"A team can have at most {max_team} members")
+        await self._check_team_size(db, application.project_subtype, len(self._live_members(application)) + 1, check_min=False)
         invitee = await self._validate_invitee(db, register_number, application.semester_id, student.register_number)
 
         db.add(ProjectMember(
@@ -558,7 +599,7 @@ class ProjectService:
         application = await self._lock_application(db, application_id)
         self._require_leader(application, student)
         if application.status not in EDITABLE:
-            raise _error(status.HTTP_400_BAD_REQUEST, "The team can't be changed at this stage. Send a change request to the HOD instead.")
+            raise _error(status.HTTP_400_BAD_REQUEST, "The team can't be changed at this stage. Send a change request to your guide instead.")
         member = next((m for m in self._live_members(application) if m.member_id == member_id), None)
         if member is None:
             raise _error(status.HTTP_404_NOT_FOUND, "Member not found")
@@ -578,7 +619,7 @@ class ProjectService:
         return await self.load(db, application_id)
 
     async def leave(self, db: AsyncSession, student: Student, application_id: int) -> ProjectApplication:
-        """A non-leader member leaves before guide approval (after approval it's a HOD change request)."""
+        """A non-leader member leaves before guide approval (after approval it's a change request to the guide)."""
         application = await self._lock_application(db, application_id)
         member = next(
             (m for m in application.members if m.register_number == student.register_number and m.status == MemberStatus.ACCEPTED),
@@ -589,7 +630,7 @@ class ProjectService:
         if member.role == MemberRole.LEADER:
             raise _error(status.HTTP_400_BAD_REQUEST, "The leader can't leave. Withdraw the application instead.")
         if application.status not in EDITABLE + (S.PENDING_GUIDE,):
-            raise _error(status.HTTP_400_BAD_REQUEST, "You can't leave an approved project. Send a change request to the HOD instead.")
+            raise _error(status.HTTP_400_BAD_REQUEST, "You can't leave an approved project. Ask your guide to move you to CDC or another category instead.")
 
         previous = application.status
         member.status = MemberStatus.REMOVED
@@ -624,7 +665,10 @@ class ProjectService:
 
         changes: dict[str, dict] = {}
         if subtype is not None and subtype != application.project_subtype:
+            if application.origin_request_id:
+                raise _error(status.HTTP_400_BAD_REQUEST, "This project's category was set by your approved category change")
             await self._validate_subtype(db, subtype)
+            await self._check_team_size(db, subtype, len(self._live_members(application)), check_min=False)
             changes["project_subtype"] = {"from": application.project_subtype, "to": subtype}
             application.project_subtype = subtype
         if title is not None and title.strip() != application.title:
@@ -651,7 +695,8 @@ class ProjectService:
             raise _error(status.HTTP_400_BAD_REQUEST, "This application can't be submitted right now")
         if any(m.status == MemberStatus.INVITED for m in application.members):
             raise _error(status.HTTP_400_BAD_REQUEST, "Some teammates haven't responded to their invite yet")
-        await self._require_open_semester(db, application.semester_id)
+        await self._check_team_size(db, application.project_subtype, sum(1 for m in application.members if m.status == MemberStatus.ACCEPTED))
+        await self._require_open_semester(db, application.semester_id, application)
         faculty = await self._require_available_guide(db, application.faculty_id, application.semester_id)
 
         previous = application.status
@@ -667,7 +712,7 @@ class ProjectService:
         application = await self._lock_application(db, application_id)
         self._require_leader(application, student)
         if application.status not in S.PRE_APPROVAL:
-            raise _error(status.HTTP_400_BAD_REQUEST, "Approved applications can't be withdrawn. Send a change request to the HOD instead.")
+            raise _error(status.HTTP_400_BAD_REQUEST, "Approved applications can't be withdrawn. Ask your guide to delete the project instead.")
 
         notify_emails = self._member_emails(application, (MemberStatus.INVITED, MemberStatus.ACCEPTED))
         previous = application.status
