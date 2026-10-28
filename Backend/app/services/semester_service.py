@@ -185,18 +185,30 @@ class SemesterService:
         batch_names: list[str],
         exclude: list[str],
         shuffle: bool = False,
+        batch_renames: dict[str, str] | None = None,
     ) -> tuple[Semester, dict]:
         source = await self.lock(db, source_id)
         self.require_not_archived(source)
         name = name.strip()
         if await self._name_taken(db, name):
             raise _error(status.HTTP_409_CONFLICT, "A semester with this name already exists")
+        renames: dict[str, str] = {}
         if not shuffle:
-            # Keep the source semester's batches; everyone stays in the batch they're in
-            batch_names = [b.batch_name for b in await self.batches(db, source_id)]
+            # Keep the source semester's batches (optionally renamed); everyone stays in the batch they're in
+            source_names = [b.batch_name.strip() for b in await self.batches(db, source_id)]
+            renames = {old.strip(): new.strip() for old, new in (batch_renames or {}).items()}
+            unknown = set(renames) - set(source_names)
+            if unknown:
+                raise _error(status.HTTP_400_BAD_REQUEST, f"No batch called {', '.join(sorted(unknown))} in {source.semester_name}")
+            if any(not new for new in renames.values()):
+                raise _error(status.HTTP_400_BAD_REQUEST, "Batch names can't be empty")
+            renames = {old: renames.get(old, old) for old in source_names}
+            batch_names = list(renames.values())
         batch_names = [b.strip() for b in batch_names if b.strip()]
         if not batch_names or len({b.lower() for b in batch_names}) != len(batch_names):
             raise _error(status.HTTP_400_BAD_REQUEST, "Give at least one batch, with unique names")
+        if any(len(b) > 50 for b in batch_names):
+            raise _error(status.HTTP_400_BAD_REQUEST, "Batch names can be at most 50 characters")
         cohort_year = cohort_year if cohort_year is not None else source.cohort_year
         if cohort_year != source.cohort_year:
             await self.require_cohort_free(db, cohort_year)
@@ -221,7 +233,7 @@ class SemesterService:
         else:
             seed = None
             new_id = {b.batch_name: b.batch_id for b in batches}
-            mapping = {s.register_number: new_id[s.batch_name.strip()] for s in students}
+            mapping = {s.register_number: new_id[renames[s.batch_name.strip()]] for s in students}
         db.add_all([
             StudentSemesterAssignment(
                 register_number=s.register_number,
@@ -243,11 +255,42 @@ class SemesterService:
             "excluded": sorted(exclude_set),
             "batches": batch_names,
             "shuffled": shuffle,
+            "renamed": {old: new for old, new in renames.items() if old != new},
             "seed": seed,
             "cancelled_swap_requests": cancelled,
         })
         await db.commit()
         return semester, {"students": len(students), "batches": stats, "seed": seed}
+
+    # ------------------------------------------------------------------ batches
+
+    async def rename_batch(self, db: AsyncSession, actor: Actor, batch_id: int, name: str) -> Batch:
+        result = await db.execute(select(Batch).where(Batch.batch_id == batch_id).with_for_update())
+        batch = result.scalar_one_or_none()
+        if batch is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "Batch not found")
+        self.require_not_archived(await db.get(Semester, batch.semester_id))
+        name = name.strip()
+        if not name:
+            raise _error(status.HTTP_400_BAD_REQUEST, "Batch name can't be empty")
+        if name == batch.batch_name:
+            return batch
+        taken = await db.execute(
+            select(Batch.batch_id).where(
+                Batch.semester_id == batch.semester_id,
+                Batch.batch_id != batch_id,
+                func.lower(func.trim(Batch.batch_name)) == name.lower(),
+            )
+        )
+        if taken.first() is not None:
+            raise _error(status.HTTP_409_CONFLICT, f"This semester already has a batch called {name}")
+        audit_service.log(db, actor, "semester.batch_rename", "semester", batch.semester_id, {
+            "batch_id": batch_id, "from": batch.batch_name, "to": name,
+        })
+        batch.batch_name = name
+        await db.commit()
+        await db.refresh(batch)
+        return batch
 
     # ------------------------------------------------------------------ batch assignment
 
