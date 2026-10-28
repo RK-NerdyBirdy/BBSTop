@@ -73,9 +73,21 @@ def xlsx_file(rows):
 
 # ---------------------------------------------------------------- roll-over & archive
 
+async def test_rollover_keeps_everyone_in_their_batch_by_default(client, world):
+    before = (await client.get(f"/api/admin/semesters/{world.semester_id}/students", headers=world.hod)).json()
+    r = await client.post("/api/admin/semesters/rollover", headers=world.hod, json={
+        "source_semester_id": world.semester_id, "semester_name": "Next term",
+    })
+    assert r.status_code == 201, r.text
+    after = (await client.get(f"/api/admin/semesters/{r.json()['semester']['semester_id']}/students", headers=world.hod)).json()
+    assert sorted(b["batch_name"] for b in after["batches"]) == sorted(b["batch_name"] for b in before["batches"])
+    assert {s["register_number"]: s["batch_name"] for s in after["students"]} == {s["register_number"]: s["batch_name"] for s in before["students"]}
+    assert {s["register_number"]: s["cgpa"] for s in after["students"]} == {s["register_number"]: s["cgpa"] for s in before["students"]}
+
+
 async def test_rollover_copies_students_balances_and_archives(client, world):
     await set_cohort(client, world, world.semester_id, 2024)
-    r = await rollover(client, world, exclude=["S10"])
+    r = await rollover(client, world, exclude=["S10"], shuffle=True)
     assert r.status_code == 201, r.text
     new = r.json()["semester"]
     assert new["cohort_year"] == 2024 and not new["archived"] and not new["assignment_locked"]
