@@ -85,6 +85,54 @@ async def test_rollover_keeps_everyone_in_their_batch_by_default(client, world):
     assert {s["register_number"]: s["cgpa"] for s in after["students"]} == {s["register_number"]: s["cgpa"] for s in before["students"]}
 
 
+async def test_rollover_renames_batches_without_moving_anyone(client, world):
+    before = (await client.get(f"/api/admin/semesters/{world.semester_id}/students", headers=world.hod)).json()
+    # Swapping two names is fine; B3 isn't listed, so it keeps its name
+    r = await client.post("/api/admin/semesters/rollover", headers=world.hod, json={
+        "source_semester_id": world.semester_id, "semester_name": "Next term",
+        "batch_renames": {"B1": "B2", "B2": "B1", "B4": "FN1"},
+    })
+    assert r.status_code == 201, r.text
+    after = (await client.get(f"/api/admin/semesters/{r.json()['semester']['semester_id']}/students", headers=world.hod)).json()
+    assert sorted(b["batch_name"] for b in after["batches"]) == ["B1", "B2", "B3", "FN1"]
+    renamed = {"B1": "B2", "B2": "B1", "B3": "B3", "B4": "FN1"}
+    old = {s["register_number"]: s["batch_name"] for s in before["students"]}
+    assert {s["register_number"]: s["batch_name"] for s in after["students"]} == {reg: renamed[b] for reg, b in old.items()}
+
+
+async def test_rollover_rejects_bad_batch_renames(client, world):
+    body = {"source_semester_id": world.semester_id, "semester_name": "Next term"}
+    r = await client.post("/api/admin/semesters/rollover", headers=world.hod, json={**body, "batch_renames": {"B1": "B2"}})
+    assert r.status_code == 400  # two batches would be called B2
+    r = await client.post("/api/admin/semesters/rollover", headers=world.hod, json={**body, "batch_renames": {"ZZ": "AN"}})
+    assert r.status_code == 400
+    r = await client.post("/api/admin/semesters/rollover", headers=world.hod, json={**body, "batch_renames": {"B1": "  "}})
+    assert r.status_code == 400
+
+
+async def test_rename_batch(client, world):
+    batches = (await client.get(f"/api/admin/semesters/{world.semester_id}/students", headers=world.hod)).json()["batches"]
+    b1 = next(b for b in batches if b["batch_name"] == "B1")
+    r = await client.patch(f"/api/admin/batches/{b1['batch_id']}", headers=world.hod, json={"batch_name": "  FN "})
+    assert r.status_code == 200, r.text
+    assert r.json()["batch_name"] == "FN"
+    # Students see the new name
+    mine = (await client.get("/api/student/me/batch", headers=world.student(4))).json()
+    assert "FN" in {m["batch_name"] for m in mine}
+    # Names stay unique within the semester (case-insensitive), but other semesters don't matter
+    b2 = next(b for b in batches if b["batch_name"] == "B2")
+    assert (await client.patch(f"/api/admin/batches/{b2['batch_id']}", headers=world.hod, json={"batch_name": "fn"})).status_code == 409
+    log = (await client.get("/api/admin/audit-log", headers=world.hod, params={"entity": "semester"})).json()
+    assert any(i["action"] == "semester.batch_rename" and i["details"]["to"] == "FN" for i in log["items"])
+
+
+async def test_cannot_rename_batch_in_archived_semester(client, world):
+    batches = (await client.get(f"/api/admin/semesters/{world.semester_id}/students", headers=world.hod)).json()["batches"]
+    await rollover(client, world)
+    r = await client.patch(f"/api/admin/batches/{batches[0]['batch_id']}", headers=world.hod, json={"batch_name": "New"})
+    assert r.status_code == 400
+
+
 async def test_rollover_copies_students_balances_and_archives(client, world):
     await set_cohort(client, world, world.semester_id, 2024)
     r = await rollover(client, world, exclude=["S10"], shuffle=True)

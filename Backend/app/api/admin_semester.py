@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.dependencies.admin_auth import get_current_admin
 from app.models.admin import Admin
-from app.schemas.batch import SemesterResponse
+from app.schemas.batch import BatchResponse, SemesterResponse
 from app.services.cgpa_file import read_cgpa_file
 from app.services.project_service import admin_actor
 from app.services.semester_service import semester_service
@@ -23,7 +23,13 @@ class RolloverRequest(BaseModel):
     # shuffle=True: deal students into batch_names with balanced average CGPA.
     shuffle: bool = False
     batch_names: list[str] = Field(default_factory=list, max_length=20)
+    # Without shuffling: new names for the copied batches, e.g. {"FN": "AN", "AN1": "FN1"}. Unlisted batches keep their name.
+    batch_renames: dict[str, str] = Field(default_factory=dict)
     exclude: list[str] = Field(default_factory=list)
+
+
+class BatchRename(BaseModel):
+    batch_name: str = Field(..., min_length=1, max_length=50)
 
 
 class ArchiveUpdate(BaseModel):
@@ -81,8 +87,20 @@ async def rollover(
         payload.batch_names,
         payload.exclude,
         payload.shuffle,
+        payload.batch_renames,
     )
     return {"semester": SemesterResponse.model_validate(semester), **summary}
+
+
+@router.patch("/batches/{batch_id}", response_model=BatchResponse)
+async def rename_batch(
+    batch_id: int,
+    payload: BatchRename,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+) -> BatchResponse:
+    batch = await semester_service.rename_batch(db, admin_actor(current_admin.admin_id), batch_id, payload.batch_name)
+    return BatchResponse.model_validate(batch)
 
 
 @router.patch("/semesters/{semester_id}/archive", response_model=SemesterResponse)
