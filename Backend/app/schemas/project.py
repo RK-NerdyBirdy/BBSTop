@@ -58,6 +58,7 @@ class SettingsResponse(BaseModel):
     cdc_enabled: bool
     max_proof_size_mb: int
     swap_cgpa_tolerance: float
+    swap_limit: int
 
 
 class SettingsUpdate(BaseModel):
@@ -68,6 +69,7 @@ class SettingsUpdate(BaseModel):
     cdc_enabled: bool | None = None
     max_proof_size_mb: int | None = None
     swap_cgpa_tolerance: float | None = None
+    swap_limit: int | None = None
 
 
 class RegistrationOpenUpdate(BaseModel):

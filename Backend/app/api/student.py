@@ -37,6 +37,7 @@ from app.schemas.student import (
     StudentSwapLockResponse,
     StudentSwapLockUpdate,
 )
+from app.services.settings_service import settings_service
 from app.services.swap_service import swap_candidate_service
 from app.models.semester import Semester
 from app.models.batch import Batch
@@ -165,6 +166,10 @@ async def get_my_swap_allowed_status(
     assignments = await get_all_student_assignments(db, student.register_number)
     semester_ids = sorted({assignment.semester_id for assignment in assignments})
 
+    used = await swap_candidate_service.swaps_used(db, [a.assignment_id for a in assignments])
+    used_by_semester = {a.semester_id: used.get(a.assignment_id, 0) for a in assignments}
+    swap_limit = await settings_service.get(db, "swap_limit")
+
     result: list[SemesterSwapAllowedResponse] = []
     for semester_id in semester_ids:
         semester = await get_semester(db, semester_id)
@@ -174,6 +179,8 @@ async def get_my_swap_allowed_status(
                     semester_id=semester.semester_id,
                     semester_name=semester.semester_name,
                     swap_allowed=semester.swap_allowed,
+                    swaps_used=used_by_semester.get(semester_id, 0),
+                    swap_limit=swap_limit,
                 )
             )
 
@@ -400,6 +407,13 @@ async def create_swap_request_endpoint(
             detail="Swap candidates must be in different batches",
         )
 
+    reached = await swap_candidate_service.limit_reached(db, requester, target)
+    if reached:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You've used all your swaps for this semester" if reached[0] is requester else "This student has used all their swaps for this semester",
+        )
+
     eligible_candidates = await swap_candidate_service.get_swap_candidates(
         db,
         requester.assignment_id,
@@ -506,6 +520,14 @@ async def accept_swap_request(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Swaps are not allowed for this semester",
+            )
+
+        # Either student may have used up their swaps since the request was sent
+        reached = await swap_candidate_service.limit_reached(db, target_assignment, requester_assignment)
+        if reached:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You've used all your swaps for this semester" if reached[0] is target_assignment else "The other student has used all their swaps for this semester",
             )
 
         # CGPAs or batches may have changed since the request was sent
