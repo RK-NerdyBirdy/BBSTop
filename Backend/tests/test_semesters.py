@@ -294,6 +294,79 @@ async def test_swap_rejected_when_cgpa_no_longer_eligible(client, world):
     assert r.status_code == 400 and "no longer eligible" in r.json()["detail"]
 
 
+async def _swap(client, world, a: int, b: int):
+    """a asks b, b accepts, the HOD approves. Returns the final response."""
+    mine = (await client.get("/api/student/me/batch", headers=world.student(a))).json()
+    theirs = (await client.get("/api/student/me/batch", headers=world.student(b))).json()
+    pick = lambda rows: next(r["assignment_id"] for r in rows if r["semester_id"] == world.semester_id)
+    r = await client.post("/api/student/swap-requests", headers=world.student(a), json={
+        "requester_assignment_id": pick(mine), "target_assignment_id": pick(theirs),
+    })
+    if r.status_code != 201:
+        return r
+    request_id = r.json()["request_id"]
+    r = await client.patch(f"/api/student/swap-requests/{request_id}/accept", headers=world.student(b))
+    assert r.status_code == 200, r.text
+    return await client.patch(f"/api/admin/swap-requests/{request_id}/approve", headers=world.hod)
+
+
+async def test_swap_limit_stops_a_second_swap(client, world):
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": True})
+    # Fixture batches go by n % 4, so S01/S02 and S03/S04 start in different batches
+    r = await _swap(client, world, 1, 2)
+    assert r.json()["status"] == "APPROVED", r.text
+
+    # Default limit is 1: S01 can't ask anyone, and nobody can ask S01
+    assert (await client.get("/api/student/swap-eligible", headers=world.student(1))).json()["eligible_by_semester"].get(str(world.semester_id), []) == []
+    r = await _swap(client, world, 1, 3)
+    assert r.status_code == 400 and "used all your swaps" in r.json()["detail"]
+    r = await _swap(client, world, 3, 1)
+    assert r.status_code == 400 and "used all their swaps" in r.json()["detail"]
+    other = (await client.get("/api/student/swap-eligible", headers=world.student(3))).json()["eligible_by_semester"][str(world.semester_id)]
+    assert not {c["register_number"] for c in other} & {"S01", "S02"}
+
+    allowed = (await client.get("/api/student/swap-allowed", headers=world.student(1))).json()
+    assert next(s for s in allowed if s["semester_id"] == world.semester_id)["swaps_used"] == 1
+    d = (await client.get("/api/student/dashboard", headers=world.student(1))).json()
+    assert next(s for s in d["semesters"] if s["semester_id"] == world.semester_id)["swaps_used"] == 1
+
+    # The HOD can allow more
+    assert (await client.put("/api/admin/settings", headers=world.hod, json={"swap_limit": 2})).json()["swap_limit"] == 2
+    assert (await _swap(client, world, 1, 3)).json()["status"] == "APPROVED"
+
+
+async def test_lowering_swap_limit_blocks_open_requests(client, world):
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": True})
+    await client.put("/api/admin/settings", headers=world.hod, json={"swap_limit": 2})
+    await _swap(client, world, 1, 2)
+    batch = {n: (await client.get("/api/student/me/batch", headers=world.student(n))).json() for n in (1, 3)}
+    pick = lambda rows: next(r["assignment_id"] for r in rows if r["semester_id"] == world.semester_id)
+    r = await client.post("/api/student/swap-requests", headers=world.student(1), json={
+        "requester_assignment_id": pick(batch[1]), "target_assignment_id": pick(batch[3]),
+    })
+    request_id = r.json()["request_id"]
+    r = await client.patch(f"/api/student/swap-requests/{request_id}/accept", headers=world.student(3))
+    assert r.status_code == 200
+    await client.put("/api/admin/settings", headers=world.hod, json={"swap_limit": 1})
+    r = await client.patch(f"/api/admin/swap-requests/{request_id}/approve", headers=world.hod)
+    assert r.status_code == 400 and "S01" in r.json()["detail"]
+
+
+async def test_swap_limit_starts_afresh_each_semester(client, world):
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": True})
+    await _swap(client, world, 1, 2)
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": False})
+    new = (await rollover(client, world)).json()["semester"]["semester_id"]
+    allowed = (await client.get("/api/student/swap-allowed", headers=world.student(1))).json()
+    assert next(s for s in allowed if s["semester_id"] == new)["swaps_used"] == 0
+
+
+async def test_swap_limit_rule_validated(client, world):
+    assert (await client.get("/api/admin/settings", headers=world.hod)).json()["swap_limit"] == 1
+    for bad in (0, 21):
+        assert (await client.put("/api/admin/settings", headers=world.hod, json={"swap_limit": bad})).status_code == 422
+
+
 async def test_swap_tolerance_is_a_rule(client, world):
     r = await client.put("/api/admin/settings", headers=world.hod, json={"swap_cgpa_tolerance": 0.5})
     assert r.json()["swap_cgpa_tolerance"] == 0.5

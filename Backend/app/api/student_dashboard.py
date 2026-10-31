@@ -23,6 +23,7 @@ from app.models.semester import Semester
 from app.models.student import Student
 from app.models.student_semester_assignment import StudentSemesterAssignment
 from app.models.swap_request import SwapRequest
+from app.services.settings_service import settings_service
 from app.services.swap_service import swap_candidate_service
 
 router = APIRouter()
@@ -52,6 +53,8 @@ class DashboardSemester(BaseModel):
     batch_name: str
     cgpa: float
     swap_allowed: bool
+    swaps_used: int = 0
+    swap_limit: int = 1
     registration_open: bool
     project: DashboardProject | None
 
@@ -117,6 +120,8 @@ async def student_dashboard(
                 guide_name=guide_name,
             )
 
+    used = await swap_candidate_service.swaps_used(db, [a.assignment_id for a, _, _ in rows])
+    swap_limit = await settings_service.get(db, "swap_limit")
     semesters = [
         DashboardSemester(
             semester_id=s.semester_id,
@@ -125,6 +130,8 @@ async def student_dashboard(
             batch_name=batch_name,
             cgpa=float(a.cgpa),
             swap_allowed=s.swap_allowed,
+            swaps_used=used.get(a.assignment_id, 0),
+            swap_limit=swap_limit,
             registration_open=s.registration_open,
             project=projects.get(s.semester_id),
         )

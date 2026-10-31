@@ -331,6 +331,14 @@ async def approve_swap_request(
         semester = await get_semester(db, requester.semester_id) if requester else None
         if semester is None or semester.archived:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This semester is archived")
+        # The limit may have been lowered since the students agreed
+        if requester and target:
+            reached = await swap_candidate_service.limit_reached(db, requester, target)
+            if reached:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{', '.join(a.register_number for a in reached)} has used all their swaps for this semester. Reject the request, or raise the swap limit in Rules.",
+                )
         if not requester or not target or not await swap_candidate_service.is_eligible(db, requester, target):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

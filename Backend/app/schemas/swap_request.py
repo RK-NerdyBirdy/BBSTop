@@ -35,6 +35,8 @@ class SemesterSwapAllowedResponse(BaseModel):
     semester_id: int
     semester_name: str
     swap_allowed: bool
+    swaps_used: int = 0
+    swap_limit: int = 1
 
     model_config = ConfigDict(from_attributes=True)
 

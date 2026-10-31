@@ -18,6 +18,8 @@ DEFAULTS: dict[str, object] = {
     "max_proof_size_mb": 5,
     # Batch swaps: partners must be within this CGPA range of each other
     "swap_cgpa_tolerance": get_settings().CGPA_TOL,
+    # Batch swaps: how many approved swaps each student may make per semester
+    "swap_limit": 1,
 }
 
 
@@ -56,6 +58,9 @@ def _validate(key: str, value: object) -> object:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
             raise ValueError("swap_cgpa_tolerance must be a number between 0 and 10")
         value = round(float(value), 2)
+    elif key == "swap_limit":
+        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 20:
+            raise ValueError("swap_limit must be a whole number between 1 and 20")
     else:
         raise ValueError(f"Unknown setting: {key}")
     return value
