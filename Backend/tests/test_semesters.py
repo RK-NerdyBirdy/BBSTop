@@ -310,6 +310,32 @@ async def _swap(client, world, a: int, b: int):
     return await client.patch(f"/api/admin/swap-requests/{request_id}/approve", headers=world.hod)
 
 
+async def test_hod_sees_every_swap_request_with_its_status(client, world):
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": True})
+    batch = {n: (await client.get("/api/student/me/batch", headers=world.student(n))).json() for n in (1, 2)}
+    pick = lambda rows: next(r["assignment_id"] for r in rows if r["semester_id"] == world.semester_id)
+    r = await client.post("/api/student/swap-requests", headers=world.student(1), json={
+        "requester_assignment_id": pick(batch[1]), "target_assignment_id": pick(batch[2]),
+    })
+    request_id = r.json()["request_id"]
+
+    # Not on the approval list yet, but visible here as pending
+    assert (await client.get("/api/admin/swap-requests/accepted", headers=world.hod)).json() == []
+    rows = (await client.get("/api/admin/swap-requests", headers=world.hod)).json()
+    assert [(x["request_id"], x["status"]) for x in rows] == [(request_id, "PENDING")]
+    assert rows[0]["requester_assignment"]["student_name"] == "Student 1"
+    assert rows[0]["target_assignment"]["register_number"] == "S02"
+    assert rows[0]["target_assignment"]["batch_name"]
+
+    await client.patch(f"/api/student/swap-requests/{request_id}/accept", headers=world.student(2))
+    assert (await client.get("/api/admin/swap-requests", headers=world.hod)).json()[0]["status"] == "ACCEPTED"
+
+    # Students can't read it, and archived semesters drop off
+    assert (await client.get("/api/admin/swap-requests", headers=world.student(1))).status_code == 401
+    await client.patch(f"/api/admin/semesters/{world.semester_id}/archive", headers=world.hod, json={"archived": True})
+    assert (await client.get("/api/admin/swap-requests", headers=world.hod)).json() == []
+
+
 async def test_swap_limit_stops_a_second_swap(client, world):
     await client.patch(f"/api/admin/semesters/{world.semester_id}/swap-allowed", headers=world.hod, json={"swap_allowed": True})
     # Fixture batches go by n % 4, so S01/S02 and S03/S04 start in different batches
