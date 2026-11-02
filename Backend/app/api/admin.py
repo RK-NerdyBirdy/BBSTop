@@ -15,6 +15,7 @@ from app.crud.swap_request import (
     get_assignment_by_id,
     get_swap_request_for_update,
     list_accepted_swap_requests,
+    list_current_swap_requests,
 )
 from app.dependencies.admin_auth import get_current_admin
 from app.models.admin import Admin
@@ -242,6 +243,42 @@ async def get_swap_allowed(
         semester_name=semester.semester_name,
         swap_allowed=semester.swap_allowed,
     )
+
+
+@router.get("/swap-requests", response_model=list[SwapRequestResponseWithDetails])
+async def list_swap_requests_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+) -> list[SwapRequestResponseWithDetails]:
+    """Every swap request in current semesters, whatever its status: who asked whom, and where it stands."""
+
+    def details(a: "StudentSemesterAssignment") -> AssignmentResponse:
+        return AssignmentResponse(
+            assignment_id=a.assignment_id,
+            register_number=a.register_number,
+            student_name=a.student.student_name,
+            semester_id=a.semester_id,
+            batch_id=a.batch_id,
+            batch_name=a.batch.batch_name,
+            cgpa=float(a.cgpa),
+            active=a.active,
+            created_at=a.created_at,
+        )
+
+    return [
+        SwapRequestResponseWithDetails(
+            request_id=r.request_id,
+            requester_assignment_id=r.requester_assignment_id,
+            target_assignment_id=r.target_assignment_id,
+            status=r.status,
+            approved_by=r.approved_by,
+            approved_at=r.approved_at,
+            created_at=r.created_at,
+            requester_assignment=details(r.requester_assignment),
+            target_assignment=details(r.target_assignment),
+        )
+        for r in await list_current_swap_requests(db)
+    ]
 
 
 @router.get("/swap-requests/accepted", response_model=list[SwapRequestResponseWithDetails])

@@ -183,6 +183,24 @@ async def list_swap_requests_for_assignments(
     return list(result.scalars().all())
 
 
+async def list_current_swap_requests(db: AsyncSession) -> list[SwapRequest]:
+    """Every swap request in semesters that aren't archived, newest first."""
+    result = await db.execute(
+        select(SwapRequest)
+        .join(StudentSemesterAssignment, StudentSemesterAssignment.assignment_id == SwapRequest.requester_assignment_id)
+        .join(Semester, Semester.semester_id == StudentSemesterAssignment.semester_id)
+        .options(
+            selectinload(SwapRequest.requester_assignment).selectinload(StudentSemesterAssignment.student),
+            selectinload(SwapRequest.requester_assignment).selectinload(StudentSemesterAssignment.batch),
+            selectinload(SwapRequest.target_assignment).selectinload(StudentSemesterAssignment.student),
+            selectinload(SwapRequest.target_assignment).selectinload(StudentSemesterAssignment.batch),
+        )
+        .where(Semester.archived.is_(False))
+        .order_by(SwapRequest.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def list_accepted_swap_requests(db: AsyncSession) -> list[SwapRequest]:
     result = await db.execute(
         select(SwapRequest)
